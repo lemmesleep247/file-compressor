@@ -56,12 +56,44 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 
+	// WAL keeps readers (the dashboard) from blocking on the writer and is
+	// much friendlier to crashes; busy_timeout covers brief external locks.
+	// With a single connection these PRAGMAs apply for the pool's lifetime.
+	if _, err := db.Exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;`); err != nil {
+		db.Close()
+		return nil, err
+	}
+
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+// Ping verifies the database is usable.
+func (s *Store) Ping() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.db.Ping()
+}
+
+// Prune deletes finished jobs (completed or dead-letter) last updated
+// before cutoff and returns how many were removed. Queued and processing
+// jobs are never touched.
+func (s *Store) Prune(cutoff time.Time) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	res, err := s.db.Exec(
+		`DELETE FROM jobs WHERE status IN (?, ?) AND updated_at < ?`,
+		StatusCompleted, StatusDeadLetter, cutoff.UnixMilli(),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (s *Store) Close() error {
@@ -89,17 +121,19 @@ func (s *Store) migrate() error {
 	return err
 }
 
-// Enqueue inserts a new queued job unless one is already queued or
-// processing for the same bucket/object, which prevents duplicate MinIO
-// webhook deliveries from piling up redundant work.
+// Enqueue inserts a new queued job unless one is already queued for the
+// same bucket/object, which prevents duplicate MinIO webhook deliveries
+// from piling up redundant work. A job that is already processing does not
+// block a new one: that event may be for a newer upload the running job
+// never saw. ClaimNext keeps the two from running concurrently.
 func (s *Store) Enqueue(bucket, object string) (*Job, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	var count int
 	err := s.db.QueryRow(
-		`SELECT COUNT(1) FROM jobs WHERE bucket = ? AND object = ? AND status IN (?, ?)`,
-		bucket, object, StatusQueued, StatusProcessing,
+		`SELECT COUNT(1) FROM jobs WHERE bucket = ? AND object = ? AND status = ?`,
+		bucket, object, StatusQueued,
 	).Scan(&count)
 	if err != nil {
 		return nil, false, err
@@ -146,8 +180,13 @@ func (s *Store) ClaimNext() (*Job, error) {
 	var j Job
 	row := tx.QueryRow(
 		`SELECT id, bucket, object, retries, original_size, compressed_size, error, created_at, updated_at
-		 FROM jobs WHERE status = ? AND next_attempt_at <= ? ORDER BY created_at ASC LIMIT 1`,
-		StatusQueued, now,
+		 FROM jobs WHERE status = ? AND next_attempt_at <= ?
+		   AND NOT EXISTS (
+		     SELECT 1 FROM jobs p
+		     WHERE p.bucket = jobs.bucket AND p.object = jobs.object AND p.status = ?
+		   )
+		 ORDER BY created_at ASC LIMIT 1`,
+		StatusQueued, now, StatusProcessing,
 	)
 	if err := row.Scan(&j.ID, &j.Bucket, &j.Object, &j.Retries, &j.OriginalSize, &j.CompressedSize, &j.Error, &j.CreatedAt, &j.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
@@ -179,8 +218,10 @@ func (s *Store) Complete(id string, originalSize, compressedSize int64) error {
 
 // Fail records a processing error. If the retry budget is exhausted the
 // job moves to dead_letter (returns deadLettered = true); otherwise it is
-// re-queued with an exponential backoff delay capped at 30s.
-func (s *Store) Fail(id string, procErr error, maxRetries int) (deadLettered bool, err error) {
+// re-queued with an exponential backoff delay capped at 30s. A permanent
+// failure (retrying cannot help, e.g. a corrupt image) skips the retries
+// and dead-letters immediately.
+func (s *Store) Fail(id string, procErr error, maxRetries int, permanent bool) (deadLettered bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -195,7 +236,7 @@ func (s *Store) Fail(id string, procErr error, maxRetries int) (deadLettered boo
 		errMsg = procErr.Error()
 	}
 
-	if retries >= maxRetries {
+	if permanent || retries >= maxRetries {
 		_, err := s.db.Exec(
 			`UPDATE jobs SET status = ?, retries = ?, error = ?, updated_at = ? WHERE id = ?`,
 			StatusDeadLetter, retries, errMsg, now, id,
@@ -229,6 +270,25 @@ func (s *Store) RequeueStuckProcessing() error {
 		StatusQueued, time.Now().UnixMilli(), StatusProcessing,
 	)
 	return err
+}
+
+// Retry puts a dead-letter job back in the queue with a fresh retry budget.
+// It returns false if no such dead-letter job exists (unknown id, or the
+// job is not dead-lettered, e.g. already retried).
+func (s *Store) Retry(id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	res, err := s.db.Exec(
+		`UPDATE jobs SET status = ?, retries = 0, error = '', next_attempt_at = 0, updated_at = ?
+		 WHERE id = ? AND status = ?`,
+		StatusQueued, time.Now().UnixMilli(), id, StatusDeadLetter,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 func (s *Store) List(status string, limit int) ([]Job, error) {

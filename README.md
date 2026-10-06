@@ -79,11 +79,21 @@ should never be committed.
 | `MINIO_ACCESS_KEY` | — | MinIO access key |
 | `MINIO_SECRET_KEY` | — | MinIO secret key |
 | `MINIO_USE_SSL` | — | `true`/`false` — must match how MinIO is actually served |
-| `WEBHOOK_TOKEN` | *(empty)* | Shared secret required on `/minio-event`, accepted as either the `X-Webhook-Token` header or `Authorization: Bearer <token>`. Leave empty only for local dev |
+| `DASHBOARD_TOKEN` | — | Basic-auth password (any username) for the dashboard and `/api/*`. Required unless `ALLOW_INSECURE=true` |
+| `ALLOW_INSECURE` | `false` | Allow starting with `WEBHOOK_TOKEN`/`DASHBOARD_TOKEN` unset (local dev only) |
+| `WEBHOOK_TOKEN` | *(empty)* | Shared secret required on `/minio-event`, accepted as either the `X-Webhook-Token` header or `Authorization: Bearer <token>`. Required unless `ALLOW_INSECURE=true` |
 | `ENABLE_WEBP` | `false` | Re-encode images to WebP instead of their original format |
 | `MIN_IMAGE_SIZE_KB` | `100` | Skip files smaller than this — not worth compressing |
-| `MAX_FILE_SIZE_MB` | `200` | Skip files larger than this. The whole file is loaded into memory, so this bounds worst-case memory use |
-| `ENABLE_GENERIC_COMPRESSION` | `true` | Compress non-image files |
+| `MAX_FILE_SIZE_MB` | `200` | Skip files larger than this (checked via stat before downloading). The whole file is loaded into memory, so this bounds worst-case memory use |
+| `JOB_RETENTION_DAYS` | `90` | Delete finished job rows older than this (`0` keeps forever). Dashboard totals cover the retained rows |
+| `IMAGE_QUALITY` | `75` | JPEG/WebP quality, 1–100 |
+| `MAX_IMAGE_DIMENSION` | `0` | Downscale images whose longer side exceeds this many pixels (`0` = never). JPEG EXIF rotation is applied to the pixels, since re-encoding drops the EXIF block |
+| `BUCKET_RULES` | *(empty)* | JSON per-bucket overrides of `image_quality`, `max_dimension` and `webp`, e.g. `{"photos":{"image_quality":60,"max_dimension":2048}}`. Unset fields use the globals; unknown fields or out-of-range values stop startup |
+| `MAX_IMAGE_MEGAPIXELS` | `100` | Skip images that decode to more than this many megapixels (decompression-bomb guard); `0` disables |
+| `OUTPUT_BUCKET` | *(empty)* | Non-destructive mode: write results to this bucket under the same key and leave the source untouched. Empty compresses in place. Must differ from `DLQ_BUCKET` and not be in `ALLOWED_BUCKETS`; created at startup if missing. Events from it are ignored |
+| `ALLOWED_BUCKETS` | *(empty)* | Comma-separated bucket allowlist; empty means every bucket except `DLQ_BUCKET` |
+| `JOB_TIMEOUT_SECONDS` | `300` | Per-job time limit for MinIO I/O and compression |
+| `ENABLE_GENERIC_COMPRESSION` | `true` | Compress non-image files into a sibling `<key>.zst` object. The original is left untouched (zstd bytes aren't a valid file of the original type), so this does not reduce storage unless you delete originals yourself; `.zst` objects are never reprocessed |
 | `GENERIC_COMPRESSION` | `zstd` | Algorithm for non-image files (only `zstd` currently) |
 | `ZSTD_LEVEL` | `3` | zstd compression level (1–22) |
 | `WORKER_COUNT` | `5` | Number of concurrent worker goroutines |
@@ -92,6 +102,8 @@ should never be committed.
 | `DB_PATH` | `jobs.db` | Path to the SQLite job-queue database |
 | `LOG_DIR` | `logs` | Directory for day-wise log files (`logs/YYYY-MM-DD.log`) |
 | `LOG_RETENTION_DAYS` | `30` | Log files older than this are deleted by the background cleanup scheduler |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. `debug` adds per-job steps and the reason each object was skipped. Switchable at runtime via `POST /api/loglevel?level=…` |
+| `LOG_FORMAT` | `json` | Console encoding, `json` or `text`; log files are always JSON |
 | `PORT` | `8090` | HTTP listen port |
 
 ## Logging
@@ -112,6 +124,9 @@ cp .env.example .env
 go run -tags nodynamic ./cmd/server
 # or: ./scripts/run.ps1  /  make run
 ```
+
+Run the tests the same way: `make test` or `./scripts/test.ps1` (a bare `go test`
+panics on 32-bit Windows Go because of the same `webp` issue).
 
 Then open `http://localhost:8090` for the dashboard.
 
@@ -158,3 +173,26 @@ to the same value as `WEBHOOK_TOKEN` and requests without a matching token
   changes (e.g. PNG → WebP with `ENABLE_WEBP=true`). Clients that trust the
   `Content-Type` MinIO serves are unaffected; clients that infer format from
   the file extension are not.
+
+## Running with Docker
+
+`docker compose up --build` starts MinIO and this service together, creates an
+`uploads` bucket, a service-account key pair for the app, and the upload
+webhook. Set `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, `MINIO_ACCESS_KEY`,
+`MINIO_SECRET_KEY`, `WEBHOOK_TOKEN` and `DASHBOARD_TOKEN` in `.env` first. The
+job database and logs persist in the `app-data` volume.
+
+`/healthz` is a liveness check; `/readyz` also verifies the database and MinIO.
+
+## Dashboard actions
+
+All of these sit behind `DASHBOARD_TOKEN`, and the POSTs additionally require an
+`X-Requested-With` header (the dashboard sends it; with curl add
+`-H 'X-Requested-With: curl'`).
+
+- **Retry** a dead-letter job: `POST /api/jobs/{id}/retry` (button on each row).
+  Resets its retry budget and requeues it.
+- **Backfill** objects that predate the webhook: `POST /api/backfill?bucket=<b>&prefix=<p>`,
+  `GET /api/backfill` for progress. One backfill runs at a time (409 otherwise).
+  It skips `.zst` keys and objects outside the size limits; objects already
+  compressed in place are queued but finish quickly as no-ops.

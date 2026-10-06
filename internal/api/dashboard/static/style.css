@@ -97,3 +97,8 @@ td.mono, .mono { font-variant-numeric: tabular-nums; }
 
 .badge { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.78rem; color: var(--text-secondary); }
 .err-cell { color: var(--status-critical); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.inline-form { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.inline-form input { padding: 6px 8px; min-width: 0; flex: 1 1 160px; }
+.retry-btn, .inline-form button { padding: 4px 10px; cursor: pointer; }
+.retry-btn:disabled { opacity: 0.5; cursor: default; }

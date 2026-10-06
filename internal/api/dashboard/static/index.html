@@ -38,6 +38,16 @@
   </section>
 
   <section class="panel">
+    <h2>Backfill existing objects</h2>
+    <form id="backfill-form" class="inline-form">
+      <input id="backfill-bucket" placeholder="bucket" required>
+      <input id="backfill-prefix" placeholder="prefix (optional)">
+      <button type="submit">Queue objects</button>
+    </form>
+    <p id="backfill-status" class="mono"></p>
+  </section>
+
+  <section class="panel">
     <h2>Queued &amp; processing</h2>
     <div class="table-wrap">
       <table>
@@ -66,9 +76,9 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Bucket</th><th>Object</th><th>Retries</th><th>Error</th><th>Updated</th></tr>
+          <tr><th>Bucket</th><th>Object</th><th>Retries</th><th>Error</th><th>Updated</th><th></th></tr>
         </thead>
-        <tbody id="rows-dead"><tr><td colspan="5" class="empty">No failed jobs</td></tr></tbody>
+        <tbody id="rows-dead"><tr><td colspan="6" class="empty">No failed jobs</td></tr></tbody>
       </table>
     </div>
   </section>

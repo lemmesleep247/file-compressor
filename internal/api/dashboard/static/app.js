@@ -28,6 +28,13 @@ function statusBadge(status) {
   return `<span class="badge"><span class="status-icon status-${status}"></span>${status.replace("_", " ")}</span>`;
 }
 
+// The server rejects POSTs without this header (CSRF guard for Basic auth).
+async function post(url) {
+  const res = await fetch(url, { method: "POST", headers: { "X-Requested-With": "dashboard" } });
+  if (!res.ok) throw new Error((await res.text()).trim() || `${url}: ${res.status}`);
+  return res;
+}
+
 async function fetchJSON(url) {
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`${url}: ${res.status}`);
@@ -92,7 +99,7 @@ function renderCompleted(done) {
 function renderDead(dead) {
   const tbody = document.getElementById("rows-dead");
   if (dead.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" class="empty">No failed jobs</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="empty">No failed jobs</td></tr>`;
     return;
   }
   tbody.innerHTML = dead
@@ -103,10 +110,48 @@ function renderDead(dead) {
         <td class="mono">${j.retries}</td>
         <td class="err-cell" title="${escapeHTML(j.error)}">${escapeHTML(j.error)}</td>
         <td class="mono">${formatTime(j.updated_at)}</td>
+        <td><button type="button" class="retry-btn" data-id="${escapeHTML(j.id)}">Retry</button></td>
       </tr>`
     )
     .join("");
 }
+
+document.getElementById("rows-dead").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".retry-btn");
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    await post(`/api/jobs/${encodeURIComponent(btn.dataset.id)}/retry`);
+    tick();
+  } catch (err) {
+    btn.disabled = false;
+    alert(`Retry failed: ${err.message}`);
+  }
+});
+
+function renderBackfill(b) {
+  const el = document.getElementById("backfill-status");
+  if (!b.bucket) {
+    el.textContent = "";
+    return;
+  }
+  const where = `${b.bucket}${b.prefix ? "/" + b.prefix : ""}`;
+  const state = b.running ? "running" : b.error ? `failed: ${b.error}` : "done";
+  el.textContent = `${where}: ${state} — scanned ${b.scanned}, queued ${b.enqueued}`;
+}
+
+document.getElementById("backfill-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const bucket = document.getElementById("backfill-bucket").value.trim();
+  const prefix = document.getElementById("backfill-prefix").value.trim();
+  if (!bucket) return;
+  try {
+    await post(`/api/backfill?bucket=${encodeURIComponent(bucket)}&prefix=${encodeURIComponent(prefix)}`);
+    tick();
+  } catch (err) {
+    alert(`Backfill failed: ${err.message}`);
+  }
+});
 
 function setLive(ok) {
   const dot = document.getElementById("live-dot");
@@ -117,17 +162,19 @@ function setLive(ok) {
 
 async function tick() {
   try {
-    const [stats, queued, processing, completed, dead] = await Promise.all([
+    const [stats, queued, processing, completed, dead, backfill] = await Promise.all([
       fetchJSON("/api/stats"),
       fetchJSON("/api/jobs?status=queued&limit=100"),
       fetchJSON("/api/jobs?status=processing&limit=100"),
       fetchJSON("/api/jobs?status=completed&limit=50"),
       fetchJSON("/api/jobs?status=dead_letter&limit=50"),
+      fetchJSON("/api/backfill"),
     ]);
     renderStats(stats);
     renderActive([...processing, ...queued]);
     renderCompleted(completed);
     renderDead(dead);
+    renderBackfill(backfill);
     setLive(true);
   } catch (e) {
     console.error(e);

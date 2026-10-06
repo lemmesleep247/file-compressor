@@ -1,0 +1,62 @@
+# Local dev stack: MinIO + this service, with the bucket webhook wired up.
+# Put the variables below in a .env file next to this one (compose reads it
+# automatically); startup fails with a clear message if any is missing.
+#
+#   MINIO_ROOT_USER / MINIO_ROOT_PASSWORD  admin login for the MinIO server itself
+#   MINIO_ACCESS_KEY / MINIO_SECRET_KEY    service-account keys the app uses
+#   WEBHOOK_TOKEN / DASHBOARD_TOKEN        see README
+services:
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+      MINIO_NOTIFY_WEBHOOK_ENABLE_compressor: "on"
+      MINIO_NOTIFY_WEBHOOK_ENDPOINT_compressor: http://app:8090/minio-event
+      MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_compressor: ${WEBHOOK_TOKEN:?set WEBHOOK_TOKEN}
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [minio-data:/data]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      retries: 12
+
+  # One-shot: creates the bucket, the app's access/secret key pair, and the
+  # event rule that fires the webhook on uploads.
+  minio-init:
+    image: minio/mc
+    depends_on:
+      minio: { condition: service_healthy }
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?set MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing local/uploads
+        mc admin user svcacct add --access-key "$$MINIO_ACCESS_KEY" --secret-key "$$MINIO_SECRET_KEY" local "$$MINIO_ROOT_USER" || true
+        mc event add local/uploads arn:minio:sqs::compressor:webhook --event put || true
+
+  app:
+    build: .
+    depends_on:
+      minio-init: { condition: service_completed_successfully }
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_USE_SSL: "false"
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      WEBHOOK_TOKEN: ${WEBHOOK_TOKEN}
+      DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:?set DASHBOARD_TOKEN}
+      ALLOWED_BUCKETS: uploads
+    ports: ["8090:8090"]
+    volumes: [app-data:/data]
+
+volumes:
+  minio-data:
+  app-data:
