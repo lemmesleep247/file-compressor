@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compressor Dashboard</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>MinIO Compression Service</h1>
+  <div class="live"><span class="dot" id="live-dot"></span><span id="live-text">live</span></div>
+</header>
+
+<main>
+  <section class="tiles" aria-label="Queue summary">
+    <div class="tile">
+      <div class="tile-label"><span class="status-icon status-queued" aria-hidden="true"></span>Queued</div>
+      <div class="tile-value" id="stat-queued">0</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label"><span class="status-icon status-processing" aria-hidden="true"></span>Processing</div>
+      <div class="tile-value" id="stat-processing">0</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label"><span class="status-icon status-completed" aria-hidden="true"></span>Completed</div>
+      <div class="tile-value" id="stat-completed">0</div>
+    </div>
+    <div class="tile">
+      <div class="tile-label"><span class="status-icon status-dead_letter" aria-hidden="true"></span>Dead letter</div>
+      <div class="tile-value" id="stat-dead_letter">0</div>
+    </div>
+    <div class="tile tile-hero">
+      <div class="tile-label">Bytes saved</div>
+      <div class="tile-value" id="stat-saved">0 B</div>
+      <div class="tile-sub" id="stat-saved-pct"></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Queued &amp; processing</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Status</th><th>Bucket</th><th>Object</th><th>Retries</th><th>Updated</th></tr>
+        </thead>
+        <tbody id="rows-active"><tr><td colspan="5" class="empty">Nothing in flight</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Recently completed</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Bucket</th><th>Object</th><th>Original</th><th>Compressed</th><th>Saved</th><th>Updated</th></tr>
+        </thead>
+        <tbody id="rows-completed"><tr><td colspan="6" class="empty">Nothing completed yet</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Dead letter</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Bucket</th><th>Object</th><th>Retries</th><th>Error</th><th>Updated</th></tr>
+        </thead>
+        <tbody id="rows-dead"><tr><td colspan="5" class="empty">No failed jobs</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

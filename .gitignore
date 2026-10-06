@@ -1,0 +1,34 @@
+# Secrets / local config
+.env
+.env.*
+!.env.example
+
+# Job store database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Logs
+/logs/
+
+# Build artifacts
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Go tooling
+*.out
+vendor/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
